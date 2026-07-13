@@ -31,7 +31,7 @@ app.use(express.static(__dirname));
 const MOD_CONFIG = {
     KeyBase64: "xSna3nMZn+i6qPGV4rT0GZ5EgriWF2XGpKBKHeFWPP4=",
     IvBase64: "ZuFERVewWrSKiQxrjr70Jw==",
-    ModUrl: "https://github.com/kryytoi/WDdwdw/raw/refs/heads/main/darkvisuals.enc"
+    ModUrl: "https://github.com/kryytoi/notwhdwnwdwdjd/raw/refs/heads/main/darkvisuals.enc"
 };
 
 // База данных
