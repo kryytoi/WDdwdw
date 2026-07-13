@@ -1,0 +1,11 @@
+{"username":"ereef","password":"efef","hwid":"","banned":false,"expiresAt":"2029-07-28T14:05:19.522Z","_id":"U5x12iJZytggJOJL"}
+{"$$indexCreated":{"fieldName":"username","unique":true,"sparse":false}}
+{"username":"ereef","password":"efef","hwid":"","banned":true,"expiresAt":"2029-07-28T14:05:19.522Z","_id":"U5x12iJZytggJOJL"}
+{"username":"ereef","password":"efef","hwid":"","banned":false,"expiresAt":"2029-07-28T14:05:19.522Z","_id":"U5x12iJZytggJOJL"}
+{"username":"test","password":"test1","hwid":"","banned":false,"role":"User","expiresAt":null,"createdAt":"2026-07-13T14:23:30.305Z","_id":"TCfm09oGcCUudbqP"}
+{"username":"test","password":"test1","hwid":"BFEBFBFF000306A9","banned":false,"role":"User","expiresAt":null,"createdAt":"2026-07-13T14:23:30.305Z","_id":"TCfm09oGcCUudbqP"}
+{"username":"111","password":"111","hwid":"","banned":false,"role":"User","expiresAt":null,"createdAt":"2026-07-13T14:24:39.070Z","_id":"CUBGCLO8YQ578bCP"}
+{"username":"111","password":"111","hwid":"BFEBFBFF000306A9","banned":false,"role":"User","expiresAt":null,"createdAt":"2026-07-13T14:24:39.070Z","_id":"CUBGCLO8YQ578bCP"}
+{"username":"test11","password":"test11","hwid":"","banned":false,"role":"User","expiresAt":"2026-07-14T14:25:21.344Z","createdAt":"2026-07-13T14:25:21.344Z","_id":"bhns1JrcGxCpntu9"}
+{"username":"MEOW_GAY","password":"111","hwid":"","banned":false,"role":"User","expiresAt":null,"createdAt":"2026-07-13T14:31:29.556Z","_id":"GyBbw2A9SVH8PGHC"}
+{"username":"MEOW_GAY","password":"111","hwid":"BFEBFBFF000306A9","banned":false,"role":"User","expiresAt":null,"createdAt":"2026-07-13T14:31:29.556Z","_id":"GyBbw2A9SVH8PGHC"}
