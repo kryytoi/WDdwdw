@@ -1,26 +1,11 @@
 {
   "name": "darkvisuals-server",
   "version": "1.0.0",
-  "description": "License / mod-key server for DarkVisuals launcher. Gates the AES key that decrypts the paid .enc visuals.",
-  "type": "commonjs",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "encrypt": "node encrypt-mod.js",
-    "genkey": "node gen-key.js",
-    "hashpass": "node hash-pass.js"
-  },
-  "engines": {
-    "node": ">=18"
+    "start": "node server.js"
   },
   "dependencies": {
-    "bcryptjs": "^2.4.3",
     "express": "^4.19.2"
   }
-  {
-  "name": "darkvisuals-server",
-  "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "dependencies": { "express": "^4.19.0" }
-}
 }
