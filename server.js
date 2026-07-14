@@ -1,28 +1,7 @@
 "use strict";
 
-/**
- * ===========================================================================
- *  DarkVisuals License / Mod-Key Server
- * ===========================================================================
- *  Этот сервер — единственное место, где хранится ключ расшифровки платных
- *  визуалов. Сам файл darkvisuals.enc лежит на GitHub в ЗАШИФРОВАННОМ виде,
- *  поэтому даже если кто-то его скачает — без ключа это просто мусор.
- *
- *  Ключ (AES-256) выдаётся ТОЛЬКО если:
- *    1. Логин + пароль верны                (bcrypt-хеш, пароли в открытом виде не хранятся)
- *    2. Аккаунт не забанен                  (banned=false)
- *    3. Подписка не истекла                 (expires в будущем, либо "lifetime")
- *    4. HWID совпадает с привязанным         (одна лицензия = одно железо)
- *
- *  Два эндпоинта, которые дёргает лаунчер (см. MainWindow.xaml.cs):
- *    POST /api/login    { username, password, hwid }  -> { success, message, role }
- *    POST /api/mod-key  { login, hwid }                -> { KeyBase64, IvBase64, ModUrl }
- * ===========================================================================
- */
-
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
 const express = require("express");
 const bcrypt = require("bcryptjs");
 
@@ -30,46 +9,30 @@ const app = express();
 app.use(express.json({ limit: "64kb" }));
 
 // ---------------------------------------------------------------------------
-// КОНФИГ (через переменные окружения на Render -> Environment)
+// КОНФИГ
 // ---------------------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 
-// AES ключ/IV, которыми зашифрован darkvisuals.enc.
-// ОБЯЗАТЕЛЬНО задать в Render. НИКОГДА не коммить их в GitHub.
-const AES_KEY_BASE64 = process.env.AES_KEY_BASE64 || "";
-const AES_IV_BASE64 = process.env.AES_IV_BASE64 || "";
+// Твои Key/IV из шифрования darkvisuals.enc (env-переменные имеют приоритет)
+const AES_KEY_BASE64 =
+  process.env.AES_KEY_BASE64 || "xSna3nMZn+i6qPGV4rT0GZ5EgriWF2XGpKBKHeFWPP4=";
+const AES_IV_BASE64 =
+  process.env.AES_IV_BASE64 || "ZuFERVewWrSKiQxrjr70Jw==";
 
-// Прямая ссылка на зашифрованный мод (raw GitHub).
 const MOD_URL =
   process.env.MOD_URL ||
   "https://raw.githubusercontent.com/kryytoi/notwhdwnwdwdjd/main/darkvisuals.enc";
 
-// Секрет для админ-эндпоинтов (создание/бан пользователей).
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 
-// Файл с пользователями. На Render free-tier диск ЭФЕМЕРНЫЙ (сбрасывается при
-// перезапуске), поэтому основной источник — переменная окружения USERS_JSON
-// (одна строка JSON). Файл используется как локальный кэш / fallback.
 const USERS_FILE = path.join(__dirname, "users.json");
 
 // ---------------------------------------------------------------------------
-// ЗАГРУЗКА / СОХРАНЕНИЕ ПОЛЬЗОВАТЕЛЕЙ
+// ПОЛЬЗОВАТЕЛИ
 // ---------------------------------------------------------------------------
-/**
- * Структура одного пользователя:
- * {
- *   "username": "player1",
- *   "passwordHash": "$2a$10$....",   // bcrypt-хеш (см. npm run hashpass)
- *   "role": "User" | "Dev",
- *   "banned": false,
- *   "expires": "2025-12-31T00:00:00Z" | "lifetime",
- *   "hwid": null                     // проставится автоматически при первом входе
- * }
- */
 let users = [];
 
 function loadUsers() {
-  // 1. Приоритет — переменная окружения (переживает рестарты Render).
   if (process.env.USERS_JSON) {
     try {
       users = JSON.parse(process.env.USERS_JSON);
@@ -78,7 +41,6 @@ function loadUsers() {
       console.error("USERS_JSON is not valid JSON:", e.message);
     }
   }
-  // 2. Иначе читаем локальный файл.
   try {
     if (fs.existsSync(USERS_FILE)) {
       users = JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
@@ -90,8 +52,6 @@ function loadUsers() {
 }
 
 function saveUsers() {
-  // Пишем в файл (HWID-привязка). На эфемерном диске это временно, поэтому
-  // при использовании USERS_JSON стоит периодически синхронизировать вручную.
   try {
     fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), "utf8");
   } catch (e) {
@@ -106,7 +66,7 @@ function findUser(username) {
 }
 
 // ---------------------------------------------------------------------------
-// ПРОВЕРКА ЛИЦЕНЗИИ (общая для /login и /mod-key)
+// ПРОВЕРКА ЛИЦЕНЗИИ
 // ---------------------------------------------------------------------------
 function isExpired(expires) {
   if (!expires) return false;
@@ -116,10 +76,6 @@ function isExpired(expires) {
   return t < Date.now();
 }
 
-/**
- * Возвращает { ok:true, user } или { ok:false, message }.
- * checkPassword=false — когда пароль уже проверили (для /mod-key).
- */
 async function verifyLicense(username, password, hwid, checkPassword) {
   const user = findUser(username);
   if (!user) return { ok: false, message: "Неверный логин или пароль!" };
@@ -137,7 +93,6 @@ async function verifyLicense(username, password, hwid, checkPassword) {
   const cleanHwid = String(hwid || "").trim();
   if (!cleanHwid) return { ok: false, message: "HWID не передан." };
 
-  // Первый вход — привязываем железо. Дальше сверяем.
   if (!user.hwid) {
     user.hwid = cleanHwid;
     saveUsers();
@@ -149,7 +104,7 @@ async function verifyLicense(username, password, hwid, checkPassword) {
 }
 
 // ---------------------------------------------------------------------------
-// ЭНДПОИНТ: /api/login
+// /api/login
 // ---------------------------------------------------------------------------
 app.post("/api/login", async (req, res) => {
   try {
@@ -172,10 +127,8 @@ app.post("/api/login", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// ЭНДПОИНТ: /api/mod-key
+// /api/mod-key
 // ---------------------------------------------------------------------------
-// Лаунчер уже залогинен, но мы ПОВТОРНО проверяем бан/подписку/HWID —
-// чтобы человек, которого забанили ПОСЛЕ входа, не получил ключ.
 app.post("/api/mod-key", async (req, res) => {
   try {
     if (!AES_KEY_BASE64 || !AES_IV_BASE64) {
@@ -183,14 +136,12 @@ app.post("/api/mod-key", async (req, res) => {
     }
 
     const { login, hwid } = req.body || {};
-    // Пароль тут не проверяем (его уже проверил /login), но железо и статус — да.
     const result = await verifyLicense(login, null, hwid, false);
 
     if (!result.ok) {
       return res.status(403).json({ error: result.message });
     }
 
-    // Отдаём ключ + IV + ссылку на .enc. Только по HTTPS, только этому юзеру.
     return res.json({
       KeyBase64: AES_KEY_BASE64,
       IvBase64: AES_IV_BASE64,
@@ -203,7 +154,7 @@ app.post("/api/mod-key", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// АДМИН-ЭНДПОИНТЫ (управление пользователями через заголовок x-admin-token)
+// АДМИНКА (заголовок x-admin-token)
 // ---------------------------------------------------------------------------
 function requireAdmin(req, res, next) {
   if (!ADMIN_TOKEN) return res.status(403).json({ error: "Admin disabled." });
@@ -212,7 +163,6 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// Список пользователей (без хешей паролей).
 app.get("/admin/users", requireAdmin, (req, res) => {
   res.json(
     users.map((u) => ({
@@ -225,7 +175,6 @@ app.get("/admin/users", requireAdmin, (req, res) => {
   );
 });
 
-// Создать/обновить пользователя. passwordHash получаешь через `npm run hashpass`.
 app.post("/admin/users", requireAdmin, (req, res) => {
   const { username, passwordHash, role, expires } = req.body || {};
   if (!username || !passwordHash)
@@ -250,7 +199,6 @@ app.post("/admin/users", requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-// Забанить / разбанить.
 app.post("/admin/ban", requireAdmin, (req, res) => {
   const { username, banned } = req.body || {};
   const user = findUser(username);
@@ -260,7 +208,6 @@ app.post("/admin/ban", requireAdmin, (req, res) => {
   res.json({ ok: true, banned: user.banned });
 });
 
-// Сбросить привязку HWID (например, юзер сменил ПК).
 app.post("/admin/reset-hwid", requireAdmin, (req, res) => {
   const { username } = req.body || {};
   const user = findUser(username);
@@ -271,15 +218,10 @@ app.post("/admin/reset-hwid", requireAdmin, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Health-check для Render
-// ---------------------------------------------------------------------------
 app.get("/", (req, res) => res.send("DarkVisuals server is running."));
 
-// ---------------------------------------------------------------------------
 loadUsers();
 app.listen(PORT, () => {
   console.log(`DarkVisuals server listening on port ${PORT}`);
   console.log(`Loaded ${users.length} user(s).`);
-  if (!AES_KEY_BASE64 || !AES_IV_BASE64)
-    console.warn("WARNING: AES_KEY_BASE64 / AES_IV_BASE64 не заданы!");
 });
