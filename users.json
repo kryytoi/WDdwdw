@@ -1,0 +1,10 @@
+[
+  {
+    "username": "testuser",
+    "passwordHash": "$2a$10$CwTycUXWue0Thq9StjUM0uJ8Dq2h1u1B0kZ5V9m0m0m0m0m0m0m0",
+    "role": "User",
+    "banned": false,
+    "expires": "lifetime",
+    "hwid": null
+  }
+]
