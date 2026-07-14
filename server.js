@@ -1,255 +1,285 @@
-const util = require('util');
-// Фикс для старой библиотеки NeDB: в новых версиях Node.js
-// эти функции удалили из util, а NeDB ими пользуется.
-// Без этих строк ЛЮБОЙ поиск/бан/удаление падает с ошибкой
-// "util.isRegExp is not a function".
-util.isDate = function (val) { return val instanceof Date; };
-util.isRegExp = function (val) { return val instanceof RegExp; };
-util.isArray = Array.isArray;
-util.isError = function (val) { return val instanceof Error; };
-util.isFunction = function (val) { return typeof val === 'function'; };
-util.isString = function (val) { return typeof val === 'string'; };
-util.isNumber = function (val) { return typeof val === 'number'; };
-util.isObject = function (val) { return val !== null && typeof val === 'object'; };
-util.isUndefined = function (val) { return val === undefined; };
-util.isNull = function (val) { return val === null; };
-util.isBoolean = function (val) { return typeof val === 'boolean'; };
+"use strict";
 
-const path = require('path');
-const express = require('express');
-const Datastore = require('nedb');
-const cors = require('cors');
+/**
+ * ===========================================================================
+ *  DarkVisuals License / Mod-Key Server
+ * ===========================================================================
+ *  Этот сервер — единственное место, где хранится ключ расшифровки платных
+ *  визуалов. Сам файл darkvisuals.enc лежит на GitHub в ЗАШИФРОВАННОМ виде,
+ *  поэтому даже если кто-то его скачает — без ключа это просто мусор.
+ *
+ *  Ключ (AES-256) выдаётся ТОЛЬКО если:
+ *    1. Логин + пароль верны                (bcrypt-хеш, пароли в открытом виде не хранятся)
+ *    2. Аккаунт не забанен                  (banned=false)
+ *    3. Подписка не истекла                 (expires в будущем, либо "lifetime")
+ *    4. HWID совпадает с привязанным         (одна лицензия = одно железо)
+ *
+ *  Два эндпоинта, которые дёргает лаунчер (см. MainWindow.xaml.cs):
+ *    POST /api/login    { username, password, hwid }  -> { success, message, role }
+ *    POST /api/mod-key  { login, hwid }                -> { KeyBase64, IvBase64, ModUrl }
+ * ===========================================================================
+ */
+
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const express = require("express");
+const bcrypt = require("bcryptjs");
 
 const app = express();
-app.use(express.json());
-app.use(cors());
+app.use(express.json({ limit: "64kb" }));
 
-// Отдаём админку (index.html лежит рядом с server.js)
-app.use(express.static(__dirname));
-
-// ---- Настройки мода (то, что раньше лежало в mod-key) ----
-const MOD_CONFIG = {
-    KeyBase64: "xSna3nMZn+i6qPGV4rT0GZ5EgriWF2XGpKBKHeFWPP4=",
-    IvBase64: "ZuFERVewWrSKiQxrjr70Jw==",
-    ModUrl: "https://github.com/kryytoi/notwhdwnwdwdjd/raw/refs/heads/main/darkvisuals.enc"
-};
-
-// База данных
-const db = new Datastore({ filename: path.join(__dirname, 'users.db'), autoload: true });
-// Уникальный индекс по логину, чтобы не было дублей и удаление всегда попадало точно в цель
-db.ensureIndex({ fieldName: 'username', unique: true }, (err) => {
-    if (err) console.log('Индекс username:', err.message);
-});
-
-// ---- Вспомогательные функции ----
-
-// Промис-обёртки над NeDB, чтобы код был чище и без "callback hell"
-const dbFindOne = (query) => new Promise((res, rej) =>
-    db.findOne(query, (e, doc) => (e ? rej(e) : res(doc))));
-
-const dbFind = (query) => new Promise((res, rej) =>
-    db.find(query, (e, docs) => (e ? rej(e) : res(docs))));
-
-const dbInsert = (doc) => new Promise((res, rej) =>
-    db.insert(doc, (e, newDoc) => (e ? rej(e) : res(newDoc))));
-
-const dbUpdate = (query, update, options = {}) => new Promise((res, rej) =>
-    db.update(query, update, options, (e, num) => (e ? rej(e) : res(num))));
-
-const dbRemove = (query, options = {}) => new Promise((res, rej) =>
-    db.remove(query, options, (e, num) => (e ? rej(e) : res(num))));
-
-const isExpired = (user) => user.expiresAt && new Date() > new Date(user.expiresAt);
-
-// =====================================================================
-// 1. АВТОРИЗАЦИЯ ЛАУНЧЕРА (замена Keys.txt)
-// =====================================================================
-app.post('/api/login', async (req, res) => {
-    try {
-        const username = (req.body.username || '').trim();
-        const password = (req.body.password || '').trim();
-        const hwid = (req.body.hwid || '').trim();
-
-        if (!username || !password) {
-            return res.json({ success: false, message: "Введите логин и пароль!" });
-        }
-
-        const user = await dbFindOne({ username });
-        if (!user) return res.json({ success: false, message: "Пользователь не найден" });
-        if (user.password !== password) return res.json({ success: false, message: "Неверный пароль" });
-
-        // Бан
-        if (user.banned) return res.json({ success: false, message: "Аккаунт заблокирован!" });
-
-        // Истёкшая подписка
-        if (isExpired(user)) return res.json({ success: false, message: "Ваша подписка истекла!" });
-
-        // Привязка HWID при первом входе
-        if (!user.hwid) {
-            await dbUpdate({ _id: user._id }, { $set: { hwid } });
-            return res.json({ success: true, message: "HWID привязан", role: user.role || "User" });
-        }
-
-        // Проверка HWID
-        if (user.hwid !== hwid) {
-            return res.json({ success: false, message: "Ошибка: вход с другого ПК (HWID не совпадает)!" });
-        }
-
-        return res.json({ success: true, message: "Авторизация успешна", role: user.role || "User" });
-    } catch (err) {
-        console.log("ОШИБКА /api/login:", err.message);
-        return res.json({ success: false, message: "Ошибка сервера: " + err.message });
-    }
-});
-
-// =====================================================================
-// 2. ВЫДАЧА КЛЮЧЕЙ РАСШИФРОВКИ МОДА
-// =====================================================================
-app.post('/api/mod-key', async (req, res) => {
-    try {
-        const login = (req.body.login || '').trim();
-        const hwid = (req.body.hwid || '').trim();
-
-        const user = await dbFindOne({ username: login });
-        if (!user) return res.status(403).json({ error: "Доступ запрещён" });
-        if (user.banned) return res.status(403).json({ error: "Аккаунт заблокирован" });
-        if (isExpired(user)) return res.status(403).json({ error: "Подписка истекла" });
-        if (user.hwid && user.hwid !== hwid) return res.status(403).json({ error: "HWID не совпадает" });
-
-        return res.json(MOD_CONFIG);
-    } catch (err) {
-        console.log("ОШИБКА /api/mod-key:", err.message);
-        return res.status(500).json({ error: "Ошибка сервера" });
-    }
-});
-
-// =====================================================================
-// 3. АДМИН: СПИСОК ВСЕХ
-// =====================================================================
-app.get('/api/admin/users', async (req, res) => {
-    try {
-        const users = await dbFind({});
-        users.sort((a, b) => (a.username || '').localeCompare(b.username || ''));
-        res.json({ success: true, users });
-    } catch (err) {
-        res.json({ success: false, message: err.message });
-    }
-});
-
-// =====================================================================
-// 4. АДМИН: СОЗДАТЬ ИГРОКА (с таймером подписки)
-// =====================================================================
-app.post('/api/admin/create', async (req, res) => {
-    try {
-        const username = (req.body.username || '').trim();
-        const password = (req.body.password || '').trim();
-        const days = req.body.days;
-
-        if (!username || !password) {
-            return res.json({ success: false, message: "Заполните логин и пароль!" });
-        }
-
-        const existing = await dbFindOne({ username });
-        if (existing) return res.json({ success: false, message: "Такой логин уже существует!" });
-
-        let expiresAt = null;
-        if (days && parseInt(days) > 0) {
-            const d = new Date();
-            d.setDate(d.getDate() + parseInt(days));
-            expiresAt = d.toISOString();
-        }
-
-        const newDoc = await dbInsert({
-            username,
-            password,
-            hwid: "",
-            banned: false,
-            role: "User",
-            expiresAt,
-            createdAt: new Date().toISOString()
-        });
-
-        res.json({ success: true, user: newDoc });
-    } catch (err) {
-        console.log("ОШИБКА /api/admin/create:", err.message);
-        res.json({ success: false, message: "Ошибка: " + err.message });
-    }
-});
-
-// =====================================================================
-// 5. АДМИН: БАН / РАЗБАН
-// =====================================================================
-app.post('/api/admin/toggle-ban', async (req, res) => {
-    try {
-        const username = (req.body.username || '').trim();
-        const banned = !!req.body.banned;
-
-        const num = await dbUpdate({ username }, { $set: { banned } });
-        if (num === 0) return res.json({ success: false, message: "Пользователь не найден" });
-
-        res.json({ success: true, banned });
-    } catch (err) {
-        res.json({ success: false, message: err.message });
-    }
-});
-
-// =====================================================================
-// 6. АДМИН: СБРОС HWID
-// =====================================================================
-app.post('/api/admin/reset-hwid', async (req, res) => {
-    try {
-        const username = (req.body.username || '').trim();
-        const num = await dbUpdate({ username }, { $set: { hwid: "" } });
-        if (num === 0) return res.json({ success: false, message: "Пользователь не найден" });
-        res.json({ success: true });
-    } catch (err) {
-        res.json({ success: false, message: err.message });
-    }
-});
-
-// =====================================================================
-// 7. АДМИН: УДАЛИТЬ ПОЛЬЗОВАТЕЛЯ ПОЛНОСТЬЮ
-// =====================================================================
-app.post('/api/admin/delete', async (req, res) => {
-    try {
-        const username = (req.body.username || '').trim();
-        if (!username) return res.json({ success: false, message: "Не указан логин" });
-
-        const num = await dbRemove({ username }, { multi: true });
-        if (num === 0) return res.json({ success: false, message: "Пользователь не найден" });
-
-        // Сжимаем файл базы, чтобы удалённые записи физически исчезли
-        db.persistence.compactDatafile();
-
-        res.json({ success: true, removed: num });
-    } catch (err) {
-        console.log("ОШИБКА /api/admin/delete:", err.message);
-        res.json({ success: false, message: err.message });
-    }
-});
-
-// =====================================================================
-// 8. АДМИН: ПРОДЛИТЬ / ИЗМЕНИТЬ ПОДПИСКУ
-// =====================================================================
-app.post('/api/admin/set-days', async (req, res) => {
-    try {
-        const username = (req.body.username || '').trim();
-        const days = parseInt(req.body.days);
-
-        let expiresAt = null; // 0 / пусто = навсегда
-        if (days && days > 0) {
-            const d = new Date();
-            d.setDate(d.getDate() + days);
-            expiresAt = d.toISOString();
-        }
-
-        const num = await dbUpdate({ username }, { $set: { expiresAt } });
-        if (num === 0) return res.json({ success: false, message: "Пользователь не найден" });
-        res.json({ success: true, expiresAt });
-    } catch (err) {
-        res.json({ success: false, message: err.message });
-    }
-});
-
+// ---------------------------------------------------------------------------
+// КОНФИГ (через переменные окружения на Render -> Environment)
+// ---------------------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('Сервер Dark Visuals запущен на порту ' + PORT));
+
+// AES ключ/IV, которыми зашифрован darkvisuals.enc.
+// ОБЯЗАТЕЛЬНО задать в Render. НИКОГДА не коммить их в GitHub.
+const AES_KEY_BASE64 = process.env.AES_KEY_BASE64 || "";
+const AES_IV_BASE64 = process.env.AES_IV_BASE64 || "";
+
+// Прямая ссылка на зашифрованный мод (raw GitHub).
+const MOD_URL =
+  process.env.MOD_URL ||
+  "https://raw.githubusercontent.com/kryytoi/notwhdwnwdwdjd/main/darkvisuals.enc";
+
+// Секрет для админ-эндпоинтов (создание/бан пользователей).
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
+
+// Файл с пользователями. На Render free-tier диск ЭФЕМЕРНЫЙ (сбрасывается при
+// перезапуске), поэтому основной источник — переменная окружения USERS_JSON
+// (одна строка JSON). Файл используется как локальный кэш / fallback.
+const USERS_FILE = path.join(__dirname, "users.json");
+
+// ---------------------------------------------------------------------------
+// ЗАГРУЗКА / СОХРАНЕНИЕ ПОЛЬЗОВАТЕЛЕЙ
+// ---------------------------------------------------------------------------
+/**
+ * Структура одного пользователя:
+ * {
+ *   "username": "player1",
+ *   "passwordHash": "$2a$10$....",   // bcrypt-хеш (см. npm run hashpass)
+ *   "role": "User" | "Dev",
+ *   "banned": false,
+ *   "expires": "2025-12-31T00:00:00Z" | "lifetime",
+ *   "hwid": null                     // проставится автоматически при первом входе
+ * }
+ */
+let users = [];
+
+function loadUsers() {
+  // 1. Приоритет — переменная окружения (переживает рестарты Render).
+  if (process.env.USERS_JSON) {
+    try {
+      users = JSON.parse(process.env.USERS_JSON);
+      return;
+    } catch (e) {
+      console.error("USERS_JSON is not valid JSON:", e.message);
+    }
+  }
+  // 2. Иначе читаем локальный файл.
+  try {
+    if (fs.existsSync(USERS_FILE)) {
+      users = JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
+    }
+  } catch (e) {
+    console.error("Failed to read users.json:", e.message);
+    users = [];
+  }
+}
+
+function saveUsers() {
+  // Пишем в файл (HWID-привязка). На эфемерном диске это временно, поэтому
+  // при использовании USERS_JSON стоит периодически синхронизировать вручную.
+  try {
+    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), "utf8");
+  } catch (e) {
+    console.error("Failed to write users.json:", e.message);
+  }
+}
+
+function findUser(username) {
+  if (!username) return null;
+  const lower = String(username).trim().toLowerCase();
+  return users.find((u) => String(u.username).toLowerCase() === lower) || null;
+}
+
+// ---------------------------------------------------------------------------
+// ПРОВЕРКА ЛИЦЕНЗИИ (общая для /login и /mod-key)
+// ---------------------------------------------------------------------------
+function isExpired(expires) {
+  if (!expires) return false;
+  if (String(expires).toLowerCase() === "lifetime") return false;
+  const t = Date.parse(expires);
+  if (Number.isNaN(t)) return false;
+  return t < Date.now();
+}
+
+/**
+ * Возвращает { ok:true, user } или { ok:false, message }.
+ * checkPassword=false — когда пароль уже проверили (для /mod-key).
+ */
+async function verifyLicense(username, password, hwid, checkPassword) {
+  const user = findUser(username);
+  if (!user) return { ok: false, message: "Неверный логин или пароль!" };
+
+  if (checkPassword) {
+    const match = await bcrypt.compare(String(password || ""), user.passwordHash || "");
+    if (!match) return { ok: false, message: "Неверный логин или пароль!" };
+  }
+
+  if (user.banned) return { ok: false, message: "Аккаунт заблокирован!" };
+
+  if (isExpired(user.expires))
+    return { ok: false, message: "Срок подписки истёк!" };
+
+  const cleanHwid = String(hwid || "").trim();
+  if (!cleanHwid) return { ok: false, message: "HWID не передан." };
+
+  // Первый вход — привязываем железо. Дальше сверяем.
+  if (!user.hwid) {
+    user.hwid = cleanHwid;
+    saveUsers();
+  } else if (user.hwid !== cleanHwid) {
+    return { ok: false, message: "HWID не совпадает! Лицензия привязана к другому ПК." };
+  }
+
+  return { ok: true, user };
+}
+
+// ---------------------------------------------------------------------------
+// ЭНДПОИНТ: /api/login
+// ---------------------------------------------------------------------------
+app.post("/api/login", async (req, res) => {
+  try {
+    const { username, password, hwid } = req.body || {};
+    const result = await verifyLicense(username, password, hwid, true);
+
+    if (!result.ok) {
+      return res.json({ success: false, message: result.message });
+    }
+
+    return res.json({
+      success: true,
+      message: "OK",
+      role: result.user.role || "User",
+    });
+  } catch (e) {
+    console.error("/api/login error:", e);
+    return res.status(500).json({ success: false, message: "Ошибка сервера." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ЭНДПОИНТ: /api/mod-key
+// ---------------------------------------------------------------------------
+// Лаунчер уже залогинен, но мы ПОВТОРНО проверяем бан/подписку/HWID —
+// чтобы человек, которого забанили ПОСЛЕ входа, не получил ключ.
+app.post("/api/mod-key", async (req, res) => {
+  try {
+    if (!AES_KEY_BASE64 || !AES_IV_BASE64) {
+      return res.status(500).json({ error: "Ключ на сервере не настроен." });
+    }
+
+    const { login, hwid } = req.body || {};
+    // Пароль тут не проверяем (его уже проверил /login), но железо и статус — да.
+    const result = await verifyLicense(login, null, hwid, false);
+
+    if (!result.ok) {
+      return res.status(403).json({ error: result.message });
+    }
+
+    // Отдаём ключ + IV + ссылку на .enc. Только по HTTPS, только этому юзеру.
+    return res.json({
+      KeyBase64: AES_KEY_BASE64,
+      IvBase64: AES_IV_BASE64,
+      ModUrl: MOD_URL,
+    });
+  } catch (e) {
+    console.error("/api/mod-key error:", e);
+    return res.status(500).json({ error: "Ошибка сервера." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// АДМИН-ЭНДПОИНТЫ (управление пользователями через заголовок x-admin-token)
+// ---------------------------------------------------------------------------
+function requireAdmin(req, res, next) {
+  if (!ADMIN_TOKEN) return res.status(403).json({ error: "Admin disabled." });
+  if (req.headers["x-admin-token"] !== ADMIN_TOKEN)
+    return res.status(401).json({ error: "Unauthorized." });
+  next();
+}
+
+// Список пользователей (без хешей паролей).
+app.get("/admin/users", requireAdmin, (req, res) => {
+  res.json(
+    users.map((u) => ({
+      username: u.username,
+      role: u.role,
+      banned: !!u.banned,
+      expires: u.expires,
+      hwid: u.hwid || null,
+    }))
+  );
+});
+
+// Создать/обновить пользователя. passwordHash получаешь через `npm run hashpass`.
+app.post("/admin/users", requireAdmin, (req, res) => {
+  const { username, passwordHash, role, expires } = req.body || {};
+  if (!username || !passwordHash)
+    return res.status(400).json({ error: "username и passwordHash обязательны." });
+
+  let user = findUser(username);
+  if (user) {
+    user.passwordHash = passwordHash;
+    if (role) user.role = role;
+    if (expires) user.expires = expires;
+  } else {
+    users.push({
+      username: String(username).trim(),
+      passwordHash,
+      role: role || "User",
+      banned: false,
+      expires: expires || "lifetime",
+      hwid: null,
+    });
+  }
+  saveUsers();
+  res.json({ ok: true });
+});
+
+// Забанить / разбанить.
+app.post("/admin/ban", requireAdmin, (req, res) => {
+  const { username, banned } = req.body || {};
+  const user = findUser(username);
+  if (!user) return res.status(404).json({ error: "Не найден." });
+  user.banned = !!banned;
+  saveUsers();
+  res.json({ ok: true, banned: user.banned });
+});
+
+// Сбросить привязку HWID (например, юзер сменил ПК).
+app.post("/admin/reset-hwid", requireAdmin, (req, res) => {
+  const { username } = req.body || {};
+  const user = findUser(username);
+  if (!user) return res.status(404).json({ error: "Не найден." });
+  user.hwid = null;
+  saveUsers();
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Health-check для Render
+// ---------------------------------------------------------------------------
+app.get("/", (req, res) => res.send("DarkVisuals server is running."));
+
+// ---------------------------------------------------------------------------
+loadUsers();
+app.listen(PORT, () => {
+  console.log(`DarkVisuals server listening on port ${PORT}`);
+  console.log(`Loaded ${users.length} user(s).`);
+  if (!AES_KEY_BASE64 || !AES_IV_BASE64)
+    console.warn("WARNING: AES_KEY_BASE64 / AES_IV_BASE64 не заданы!");
+});
