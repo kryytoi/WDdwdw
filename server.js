@@ -13,7 +13,6 @@ app.use(express.json({ limit: "64kb" }));
 // ---------------------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 
-// Твои Key/IV из шифрования darkvisuals.enc (env-переменные имеют приоритет)
 const AES_KEY_BASE64 =
   process.env.AES_KEY_BASE64 || "xSna3nMZn+i6qPGV4rT0GZ5EgriWF2XGpKBKHeFWPP4=";
 const AES_IV_BASE64 =
@@ -23,7 +22,8 @@ const MOD_URL =
   process.env.MOD_URL ||
   "https://raw.githubusercontent.com/kryytoi/notwhdwnwdwdjd/main/darkvisuals.enc";
 
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
+// Путь, по которому открывается админка. ПОМЕНЯЙ на что-то секретное!
+const PANEL_PATH = process.env.PANEL_PATH || "/panel";
 
 const USERS_FILE = path.join(__dirname, "users.json");
 
@@ -33,14 +33,6 @@ const USERS_FILE = path.join(__dirname, "users.json");
 let users = [];
 
 function loadUsers() {
-  if (process.env.USERS_JSON) {
-    try {
-      users = JSON.parse(process.env.USERS_JSON);
-      return;
-    } catch (e) {
-      console.error("USERS_JSON is not valid JSON:", e.message);
-    }
-  }
   try {
     if (fs.existsSync(USERS_FILE)) {
       users = JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
@@ -65,17 +57,18 @@ function findUser(username) {
   return users.find((u) => String(u.username).toLowerCase() === lower) || null;
 }
 
-// ---------------------------------------------------------------------------
-// ПРОВЕРКА ЛИЦЕНЗИИ
-// ---------------------------------------------------------------------------
-function isExpired(expires) {
-  if (!expires) return false;
-  if (String(expires).toLowerCase() === "lifetime") return false;
-  const t = Date.parse(expires);
+function isExpired(user) {
+  const exp = user.expiresAt || user.expires;
+  if (!exp) return false;
+  if (String(exp).toLowerCase() === "lifetime") return false;
+  const t = Date.parse(exp);
   if (Number.isNaN(t)) return false;
   return t < Date.now();
 }
 
+// ---------------------------------------------------------------------------
+// ПРОВЕРКА ЛИЦЕНЗИИ (для лаунчера)
+// ---------------------------------------------------------------------------
 async function verifyLicense(username, password, hwid, checkPassword) {
   const user = findUser(username);
   if (!user) return { ok: false, message: "Неверный логин или пароль!" };
@@ -86,9 +79,7 @@ async function verifyLicense(username, password, hwid, checkPassword) {
   }
 
   if (user.banned) return { ok: false, message: "Аккаунт заблокирован!" };
-
-  if (isExpired(user.expires))
-    return { ok: false, message: "Срок подписки истёк!" };
+  if (isExpired(user)) return { ok: false, message: "Срок подписки истёк!" };
 
   const cleanHwid = String(hwid || "").trim();
   if (!cleanHwid) return { ok: false, message: "HWID не передан." };
@@ -103,50 +94,24 @@ async function verifyLicense(username, password, hwid, checkPassword) {
   return { ok: true, user };
 }
 
-// ---------------------------------------------------------------------------
-// /api/login
-// ---------------------------------------------------------------------------
 app.post("/api/login", async (req, res) => {
   try {
     const { username, password, hwid } = req.body || {};
     const result = await verifyLicense(username, password, hwid, true);
-
-    if (!result.ok) {
-      return res.json({ success: false, message: result.message });
-    }
-
-    return res.json({
-      success: true,
-      message: "OK",
-      role: result.user.role || "User",
-    });
+    if (!result.ok) return res.json({ success: false, message: result.message });
+    return res.json({ success: true, message: "OK", role: result.user.role || "User" });
   } catch (e) {
     console.error("/api/login error:", e);
     return res.status(500).json({ success: false, message: "Ошибка сервера." });
   }
 });
 
-// ---------------------------------------------------------------------------
-// /api/mod-key
-// ---------------------------------------------------------------------------
 app.post("/api/mod-key", async (req, res) => {
   try {
-    if (!AES_KEY_BASE64 || !AES_IV_BASE64) {
-      return res.status(500).json({ error: "Ключ на сервере не настроен." });
-    }
-
     const { login, hwid } = req.body || {};
     const result = await verifyLicense(login, null, hwid, false);
-
-    if (!result.ok) {
-      return res.status(403).json({ error: result.message });
-    }
-
-    return res.json({
-      KeyBase64: AES_KEY_BASE64,
-      IvBase64: AES_IV_BASE64,
-      ModUrl: MOD_URL,
-    });
+    if (!result.ok) return res.status(403).json({ error: result.message });
+    return res.json({ KeyBase64: AES_KEY_BASE64, IvBase64: AES_IV_BASE64, ModUrl: MOD_URL });
   } catch (e) {
     console.error("/api/mod-key error:", e);
     return res.status(500).json({ error: "Ошибка сервера." });
@@ -154,74 +119,91 @@ app.post("/api/mod-key", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// АДМИНКА (заголовок x-admin-token)
+// АДМИН-API (под index.html)
 // ---------------------------------------------------------------------------
-function requireAdmin(req, res, next) {
-  if (!ADMIN_TOKEN) return res.status(403).json({ error: "Admin disabled." });
-  if (req.headers["x-admin-token"] !== ADMIN_TOKEN)
-    return res.status(401).json({ error: "Unauthorized." });
-  next();
-}
-
-app.get("/admin/users", requireAdmin, (req, res) => {
-  res.json(
-    users.map((u) => ({
+app.get("/api/admin/users", (req, res) => {
+  res.json({
+    users: users.map((u) => ({
       username: u.username,
-      role: u.role,
-      banned: !!u.banned,
-      expires: u.expires,
       hwid: u.hwid || null,
-    }))
-  );
+      banned: !!u.banned,
+      expiresAt: u.expiresAt || null,
+      role: u.role || "User",
+    })),
+  });
 });
 
-app.post("/admin/users", requireAdmin, (req, res) => {
-  const { username, passwordHash, role, expires } = req.body || {};
-  if (!username || !passwordHash)
-    return res.status(400).json({ error: "username и passwordHash обязательны." });
+app.post("/api/admin/create", async (req, res) => {
+  const { username, password, days } = req.body || {};
+  const name = String(username || "").trim();
+  if (!name || !password)
+    return res.json({ success: false, message: "Логин и пароль обязательны." });
+  if (findUser(name))
+    return res.json({ success: false, message: "Такой логин уже существует." });
 
-  let user = findUser(username);
-  if (user) {
-    user.passwordHash = passwordHash;
-    if (role) user.role = role;
-    if (expires) user.expires = expires;
-  } else {
-    users.push({
-      username: String(username).trim(),
-      passwordHash,
-      role: role || "User",
-      banned: false,
-      expires: expires || "lifetime",
-      hwid: null,
-    });
-  }
+  const d = parseInt(days, 10);
+  const expiresAt =
+    d > 0 ? new Date(Date.now() + d * 24 * 60 * 60 * 1000).toISOString() : null;
+
+  users.push({
+    username: name,
+    passwordHash: await bcrypt.hash(String(password), 10),
+    role: "User",
+    banned: false,
+    expiresAt,
+    hwid: null,
+  });
   saveUsers();
-  res.json({ ok: true });
+  res.json({ success: true });
 });
 
-app.post("/admin/ban", requireAdmin, (req, res) => {
-  const { username, banned } = req.body || {};
-  const user = findUser(username);
-  if (!user) return res.status(404).json({ error: "Не найден." });
-  user.banned = !!banned;
-  saveUsers();
-  res.json({ ok: true, banned: user.banned });
-});
-
-app.post("/admin/reset-hwid", requireAdmin, (req, res) => {
-  const { username } = req.body || {};
-  const user = findUser(username);
-  if (!user) return res.status(404).json({ error: "Не найден." });
+app.post("/api/admin/reset-hwid", (req, res) => {
+  const user = findUser(req.body?.username);
+  if (!user) return res.json({ success: false, message: "Пользователь не найден." });
   user.hwid = null;
   saveUsers();
-  res.json({ ok: true });
+  res.json({ success: true });
+});
+
+app.post("/api/admin/toggle-ban", (req, res) => {
+  const user = findUser(req.body?.username);
+  if (!user) return res.json({ success: false, message: "Пользователь не найден." });
+  user.banned = !!req.body.banned;
+  saveUsers();
+  res.json({ success: true });
+});
+
+app.post("/api/admin/delete", (req, res) => {
+  const name = String(req.body?.username || "").trim().toLowerCase();
+  const before = users.length;
+  users = users.filter((u) => String(u.username).toLowerCase() !== name);
+  if (users.length === before)
+    return res.json({ success: false, message: "Пользователь не найден." });
+  saveUsers();
+  res.json({ success: true });
+});
+
+app.post("/api/admin/set-days", (req, res) => {
+  const user = findUser(req.body?.username);
+  if (!user) return res.json({ success: false, message: "Пользователь не найден." });
+  const d = parseInt(req.body?.days, 10);
+  user.expiresAt = d > 0 ? new Date(Date.now() + d * 24 * 60 * 60 * 1000).toISOString() : null;
+  saveUsers();
+  res.json({ success: true });
 });
 
 // ---------------------------------------------------------------------------
+// АДМИНКА (HTML)
+// ---------------------------------------------------------------------------
+app.get(PANEL_PATH, (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
 app.get("/", (req, res) => res.send("DarkVisuals server is running."));
 
 loadUsers();
 app.listen(PORT, () => {
   console.log(`DarkVisuals server listening on port ${PORT}`);
+  console.log(`Admin panel: ${PANEL_PATH}`);
   console.log(`Loaded ${users.length} user(s).`);
 });
