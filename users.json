@@ -1,7 +1,7 @@
 [
   {
     "username": "testuser",
-    "passwordHash": "$2a$10$CwTycUXWue0Thq9StjUM0uJ8Dq2h1u1B0kZ5V9m0m0m0m0m0m0m0",
+    "passwordHash": "$2a$10$LZSNzebaV1HAy2H4bzHgjeJL7Ae4yyFzDNkdt6VZJTp7Ol3P8Fzse",
     "role": "User",
     "banned": false,
     "expires": "lifetime",
