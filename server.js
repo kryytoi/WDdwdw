@@ -14,9 +14,9 @@ app.use(express.json({ limit: "64kb" }));
 const PORT = process.env.PORT || 3000;
 
 const AES_KEY_BASE64 =
-  process.env.AES_KEY_BASE64 || "xSna3nMZn+i6qPGV4rT0GZ5EgriWF2XGpKBKHeFWPP4=";
+  process.env.AES_KEY_BASE64 || "YnBA9aY3znDMNFGb28hNnxco84aNwDzBl/i6bKtyAG0=";
 const AES_IV_BASE64 =
-  process.env.AES_IV_BASE64 || "ZuFERVewWrSKiQxrjr70Jw==";
+  process.env.AES_IV_BASE64 || "loL1kraQ1ncH69vQVHzVqg==";
 
 const MOD_URL =
   process.env.MOD_URL ||
